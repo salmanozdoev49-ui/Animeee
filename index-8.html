@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080808">
+<title>Закрытая галерея</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080808;color:#fff;font:16px Arial,sans-serif}
+header{padding:22px 16px;border-bottom:1px solid #292929}
+h1{font-size:23px;margin:0 0 8px}
+small,.muted{color:#999}
+main{max-width:1000px;margin:auto;padding:18px 14px}
+button,.btn{background:#fff;color:#000;border:0;border-radius:7px;padding:11px 14px;font-weight:bold;cursor:pointer}
+button.secondary{background:#202020;color:#fff;border:1px solid #444}
+button.danger{background:#3b1717;color:#fff}
+input{width:100%;padding:12px;background:#151515;color:#fff;border:1px solid #444;border-radius:7px;margin:6px 0 12px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row input{flex:1;min-width:150px}
+#folders{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.folder{background:#151515;border:1px solid #333;border-radius:9px;padding:15px;text-align:left;color:#fff;min-height:100px}
+.folder strong{display:block;margin:10px 0}
+#photos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+.photo{position:relative;aspect-ratio:1;background:#171717;overflow:hidden}
+.photo img{width:100%;height:100%;object-fit:cover;cursor:pointer}
+.photo button{position:absolute;right:4px;top:4px;padding:6px}
+#notice{margin:12px 0;color:#ccc;white-space:pre-wrap}
+.hidden{display:none!important}
+#viewer{position:fixed;inset:0;background:#000e;display:flex;align-items:center;justify-content:center;padding:12px;z-index:5}
+#viewer img{max-width:100%;max-height:85vh;object-fit:contain}
+@media(min-width:650px){#folders{grid-template-columns:repeat(4,1fr)}#photos{grid-template-columns:repeat(5,minmax(0,1fr))}}
+</style>
+</head>
+<body>
+<header>
+  <h1>▣ Закрытая галерея</h1>
+  <small>Твоя коллекция фотографий</small>
+</header>
+<main>
+  <section id="login">
+    <h2>Вход администратора</h2>
+    <p class="muted">Для управления галереей войди в свой аккаунт.</p>
+    <input id="email" type="email" placeholder="Твоя почта" autocomplete="username">
+    <input id="password" type="password" placeholder="Пароль" autocomplete="current-password">
+    <button id="loginBtn">Войти</button>
+  </section>
+  <div class="row" style="margin:12px 0">
+    <span id="status" class="muted">Режим просмотра</span>
+    <span style="flex:1"></span>
+    <button id="logoutBtn" class="secondary hidden">Выйти</button>
+  </div>
+  <div id="adminTools" class="hidden">
+    <div class="row">
+      <input id="folderName" placeholder="Название новой папки">
+      <button id="addFolder">+ Папка</button>
+    </div>
+  </div>
+  <div id="notice" role="status"></div>
+  <section id="home"><h2>Папки</h2><div id="folders"></div></section>
+  <section id="inside" class="hidden">
+    <div class="row"><button id="back" class="secondary">← Папки</button><h2 id="folderTitle" style="flex:1"></h2></div>
+    <div id="folderTools" class="row hidden" style="margin-bottom:15px">
+      <button id="renameFolder" class="secondary">Переименовать</button>
+      <button id="deleteFolder" class="danger">Удалить папку</button>
+      <button id="uploadBtn">+ Добавить фото</button>
+      <input id="fileInput" type="file" accept="image/*" multiple hidden>
+    </div>
+    <div id="photos"></div>
+  </section>
+</main>
+<div id="viewer" class="hidden" role="dialog" aria-label="Просмотр фото">
+  <button id="closeViewer" class="secondary" style="position:absolute;top:15px;right:15px">Закрыть ✕</button>
+  <img id="viewerImg" alt="Фотография">
+</div>
+<script>
+const SUPABASE_URL = "ВСТАВЬ_PROJECT_URL";
+const SUPABASE_ANON_KEY = "ВСТАВЬ_PUBLISHABLE_OR_ANON_KEY";
+const ADMIN_UID = "ВСТАВЬ_USER_UID";
+const BUCKET = "gallery-photos";
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+let user = null, currentFolder = null, folders = [], photos = [];
+const $ = id => document.getElementById(id);
+const say = msg => $("notice").textContent = msg;
+const isAdmin = () => !!user && user.id === ADMIN_UID;
+
+function showAdmin() {
+  $("login").classList.toggle("hidden", isAdmin());
+  $("logoutBtn").classList.toggle("hidden", !user);
+  $("adminTools").classList.toggle("hidden", !isAdmin());
+  $("folderTools").classList.toggle("hidden", !isAdmin() || !currentFolder);
+  $("status").textContent = isAdmin() ? "Режим администратора" : "Режим просмотра";
+}
+async function loadFolders() {
+  const {data,error} = await db.from("folders").select("*").order("created_at");
+  if(error) throw error;
+  folders = data || [];
+  $("folders").replaceChildren();
+  for(const f of folders) {
+    const b = document.createElement("button"); b.className = "folder";
+    const icon = document.createElement("span"); icon.textContent = "▣"; icon.style.fontSize = "28px";
+    const title = document.createElement("strong"); title.textContent = f.name;
+    const count = document.createElement("small"); count.textContent = "Открыть папку →";
+    b.append(icon,title,count); b.onclick = () => openFolder(f); $("folders").append(b);
+  }
+}
+async function openFolder(f) {
+  currentFolder = f; $("home").classList.add("hidden"); $("inside").classList.remove("hidden");
+  $("folderTitle").textContent = f.name; showAdmin(); await loadPhotos();
+}
+async function loadPhotos() {
+  const {data,error} = await db.from("photos").select("*").eq("folder_id",currentFolder.id).order("created_at",{ascending:false});
+  if(error) throw error;
+  photos = data || []; $("photos").replaceChildren();
+  for(const p of photos) {
+    const {data:urlData} = db.storage.from(BUCKET).getPublicUrl(p.storage_path);
+    const card = document.createElement("div"); card.className = "photo";
+    const img = document.createElement("img"); img.src = urlData.publicUrl; img.alt = "Фотография"; img.loading = "lazy";
+    img.onclick = () => { $("viewerImg").src = img.src; $("viewer").classList.remove("hidden"); };
+    card.append(img);
+    if(isAdmin()) {
+      const del = document.createElement("button"); del.className = "danger"; del.textContent = "×";
+      del.setAttribute("aria-label","Удалить фотографию"); del.onclick = () => deletePhoto(p); card.append(del);
+    }
+    $("photos").append(card);
+  }
+}
+async function addFolder() {
+  const name = $("folderName").value.trim(); if(!name) return say("Введи название папки.");
+  const {error} = await db.from("folders").insert({name}); if(error) throw error;
+  $("folderName").value = ""; await loadFolders(); say("Папка создана.");
+}
+async function renameFolder() {
+  const name = prompt("Новое название папки:",currentFolder.name); if(!name || !name.trim()) return;
+  const {error} = await db.from("folders").update({name:name.trim()}).eq("id",currentFolder.id); if(error) throw error;
+  currentFolder.name = name.trim(); $("folderTitle").textContent = currentFolder.name; await loadFolders(); say("Название изменено.");
+}
+async function deletePhoto(p) {
+  if(!confirm("Удалить эту фотографию?")) return;
+  const {error:storageError} = await db.storage.from(BUCKET).remove([p.storage_path]); if(storageError) throw storageError;
+  const {error} = await db.from("photos").delete().eq("id",p.id); if(error) throw error;
+  await loadPhotos(); say("Фотография удалена.");
+}
+async function deleteFolder() {
+  if(!confirm("Удалить папку и все её фотографии?")) return;
+  const {data,error} = await db.from("photos").select("*").eq("folder_id",currentFolder.id); if(error) throw error;
+  const paths = (data || []).map(p => p.storage_path);
+  for(let i=0;i<paths.length;i+=100) {
+    const {error:e} = await db.storage.from(BUCKET).remove(paths.slice(i,i+100)); if(e) throw e;
+  }
+  const {error:e1} = await db.from("photos").delete().eq("folder_id",currentFolder.id); if(e1) throw e1;
+  const {error:e2} = await db.from("folders").delete().eq("id",currentFolder.id); if(e2) throw e2;
+  currentFolder = null; $("inside").classList.add("hidden"); $("home").classList.remove("hidden");
+  showAdmin(); await loadFolders(); say("Папка удалена.");
+}
+async function uploadPhotos(files) {
+  if(!isAdmin() || !currentFolder) return;
+  for(const file of files) {
+    if(!file.type.startsWith("image/")) continue;
+    const path = currentFolder.id + "/" + crypto.randomUUID() + "-" + file.name.replace(/[^a-zA-Z0-9._-]/g,"_");
+    const {error:upError} = await db.storage.from(BUCKET).upload(path,file,{upsert:false,contentType:file.type});
+    if(upError) throw upError;
+    const {error:rowError} = await db.from("photos").insert({folder_id:currentFolder.id,storage_path:path});
+    if(rowError) { await db.storage.from(BUCKET).remove([path]); throw rowError; }
+  }
+  await loadPhotos(); say("Загрузка завершена.");
+}
+async function refresh() {
+  try {
+    await loadFolders();
+    if(currentFolder) {
+      const stillExists = folders.find(f=>f.id===currentFolder.id);
+      if(stillExists) { currentFolder = stillExists; $("folderTitle").textContent = stillExists.name; await loadPhotos(); }
+      else { currentFolder = null; $("inside").classList.add("hidden"); $("home").classList.remove("hidden"); }
+    }
+    showAdmin();
+  } catch(e) { say("Ошибка: " + e.message); }
+}
+$("loginBtn").onclick = async () => {
+  say("");
+  const {error} = await db.auth.signInWithPassword({email:$("email").value.trim(),password:$("password").value});
+  if(error) return say("Не удалось войти: " + error.message);
+  const {data} = await db.auth.getUser(); user = data.user;
+  if(!isAdmin()) { await db.auth.signOut(); user = null; showAdmin(); return say("Этот аккаунт не является администратором."); }
+  await refresh();
+};
+$("logoutBtn").onclick = async () => {
+  await db.auth.signOut(); user = null; currentFolder = null;
+  $("inside").classList.add("hidden"); $("home").classList.remove("hidden"); showAdmin(); await refresh();
+};
+$("addFolder").onclick = () => addFolder().catch(e=>say(e.message));
+$("renameFolder").onclick = () => renameFolder().catch(e=>say(e.message));
+$("deleteFolder").onclick = () => deleteFolder().catch(e=>say(e.message));
+$("back").onclick = () => { currentFolder = null; $("inside").classList.add("hidden"); $("home").classList.remove("hidden"); showAdmin(); };
+$("uploadBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = async e => {
+  try { await uploadPhotos([...e.target.files]); } catch(err) { say("Ошибка загрузки: " + err.message); }
+  e.target.value = "";
+};
+$("closeViewer").onclick = () => $("viewer").classList.add("hidden");
+$("viewer").onclick = e => { if(e.target.id==="viewer") $("viewer").classList.add("hidden"); };
+db.auth.onAuthStateChange((_event,session) => {
+  user = session?.user || null;
+  if(user && !isAdmin()) { user = null; db.auth.signOut(); }
+  showAdmin(); refresh();
+});
+(async()=>{
+  const {data} = await db.auth.getSession(); user = data.session?.user || null;
+  if(user && !isAdmin()) { user = null; await db.auth.signOut(); }
+  showAdmin(); await refresh();
+})();
+</script>
+</body>
+</html>
